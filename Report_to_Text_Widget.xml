@@ -1,0 +1,411 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<feed  version="1.0" hasPendingRequests="false" >
+  <company></company>
+  <status>200</status>
+  <errmsg>OK</errmsg>
+  <interval>0</interval>
+    <entry type="predatasource">
+        <version>1551924313</version>
+        <name>Report to Text Widget</name>
+        <displayedas>Report to Text Widget</displayedas>
+        <description>By Ian Bloom &#38; Mike Suding. Converts an existing CSV report (report_id) to an HTML table and puts it in the specified text widget (widget_id)</description>
+        <collector>script</collector>
+        <hasMultiInstances>false</hasMultiInstances>
+        <schedule>300</schedule>
+        <appliesTo>lmaccess.id &#38;&#38; lmaccess.key &#38;&#38; lmaccount &#38;&#38; report_id &#38;&#38; widget_id</appliesTo>
+        <wildcardauto>false</wildcardauto>
+        <wildcardpersist>false</wildcardpersist>
+        <wildcardlinuxscript></wildcardlinuxscript>
+        <wildcardlinuxcmdline></wildcardlinuxcmdline>
+        <wildcardwinscript></wildcardwinscript>
+        <wildcardwincmdline></wildcardwincmdline>
+        <wildcardgroovyscript></wildcardgroovyscript>
+        <wildcardschedule>1440</wildcardschedule>
+        <wildcarddisable>false</wildcarddisable>
+        <wildcarddeleteinactive>false</wildcarddeleteinactive>
+        <agdmethod>none</agdmethod>
+        <agdparams></agdparams>
+        <group></group>
+        <tags></tags>
+        <technology>Required properties: report_id,  widget_id and
+lmaccess.id
+lmaccess.key
+lmaccount</technology>
+        <adlist><![CDATA[{"agdmethod":"none","agdparams":"","id":0,"filters":[],"params":{}}]]></adlist>
+        <schemaVersion>2</schemaVersion>
+        <dataSourceType>1</dataSourceType>
+        <attributes>
+        <attribute>
+            <name>scripttype</name>
+            <value>embed</value>
+            <comment></comment>
+        </attribute>
+        <attribute>
+            <name>scriptgroovy</name>
+            <value>import org.apache.http.HttpEntity;
+import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpGet;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.client.methods.HttpPut;
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.HttpClients
+import org.apache.http.util.EntityUtils;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import org.apache.commons.codec.binary.Hex;
+import groovy.json.JsonSlurper;
+import groovy.json.JsonOutput;
+import org.apache.http.entity.StringEntity;
+import org.apache.http.entity.ContentType;
+import org.apache.http.impl.client.LaxRedirectStrategy;
+import groovy.xml.MarkupBuilder;
+import java.text.SimpleDateFormat;
+
+def access_id  = hostProps.get(&#39;lmaccess.id&#39;);
+def access_key = hostProps.get(&#39;lmaccess.key&#39;);
+def account    = hostProps.get(&#39;lmaccount&#39;);
+def report_id  = hostProps.get(&#39;report_id&#39;);
+def widget_id  = hostProps.get(&#39;widget_id&#39;);
+
+/////////////////
+// PULL REPORT //
+/////////////////
+
+def resource_path = &#34;/report/reports/${report_id}/executions&#34;;
+def query_params  = &#39;&#39;;
+
+def data_dict = [:];
+data_dict[&#39;withAdminId&#39;] = 0;
+data = JsonOutput.toJson(data_dict);
+
+return_dict = LMPOST(access_id, access_key, account, resource_path, query_params, data);
+response_string = return_dict[&#39;body&#39;];
+response_json = new JsonSlurper().parseText(response_string);
+shortened_url = response_json[&#39;resulturl&#39;].trim();
+
+/////////////////////
+// GET REPORT NAME //
+/////////////////////
+
+resource_path = &#34;/report/reports/${report_id}&#34;;
+query_params  = &#39;&#39;;
+data          = &#39;&#39;;
+
+report_result = LMGET(access_id, access_key, account, resource_path, query_params, data)
+report_string = report_result[&#39;body&#39;]
+report_json = new JsonSlurper().parseText(report_string);
+
+def report_name = report_json[&#39;name&#39;]
+
+/////////////
+// GET CSV //
+/////////////
+
+dict = URLGET(shortened_url)
+csv = dict[&#39;body&#39;];
+
+////////////////
+// BUILD HTML //
+////////////////
+
+html_string = TOHTML(csv, report_name)
+
+////////////////
+// POST TO LM //
+////////////////
+
+resource_path = &#34;/dashboard/widgets/${widget_id}&#34;
+query_params  = &#39;&#39;
+data          = &#39;&#39;
+
+get_result = LMGET(access_id, access_key, account, resource_path, query_params, data)
+response_body = get_result[&#39;body&#39;]
+get_json = new JsonSlurper().parseText(response_body);
+get_json[&#39;content&#39;] = html_string
+
+data = JsonOutput.toJson(get_json);
+put_result = LMPUT(access_id, access_key, account, resource_path, query_params, data)
+
+if(put_result[&#39;code&#39;] == 200) {
+    return 0;
+}
+else {
+    return 1;
+}
+ 
+def TOHTML(_csv_string, _report_name) {
+    // Split er up
+    final_array = [];
+    max_length = 0;
+    rows = _csv_string.split(&#39;\n&#39;)
+
+    // Throw away first three rows, maintain counter
+    def row_count = 0
+    rows.each{ row -&#62;
+        if(row_count &#62; 3) {
+            // This is the insane regex to not split commas between quotes
+            array = row.split(&#34;,(?=([^\&#34;]*\&#34;[^\&#34;]*\&#34;)*[^\&#34;]*\$)&#34;)
+            final_array.add(array)
+        }
+        row_count += 1
+    }
+    // Calculate length of row
+    rows.each{ row -&#62;
+        row_size = row.size();
+        if(row_size &#62; max_length) {
+            max_length = row_size
+        }
+    }
+
+    // Initialize MarkupBuilder
+    // writer will be the string pinned between header and footer
+    def writer = new StringWriter()
+    def html = new MarkupBuilder(writer)
+
+    html_header = &#39;&#39;&#39;&#60;html&#62;
+    &#60;head&#62;
+        &#60;style&#62;
+        caption {
+            font-family: Avenir, Helvetica, Arial, sans-serif;
+            font-weight: bold;
+            font-variant: small-caps;
+            font-size: 200%;
+            border: 1px solid #ddd;
+            padding: 2px;
+            border-collapse: collapse;
+        }
+        table {
+            width: 100%;
+            height: 100%;
+        }
+        tr, td, th {
+            font-family: Avenir, Helvetica, Arial, sans-serif;
+            border-collapse: collapse;
+        }
+
+        td, th {
+            border: 1px solid #ddd;
+            padding: 2px;
+        }
+
+        tr:nth-child(even) {background-color: #f2f2f2;}
+
+        tr:hover {background-color: #ddd;}
+
+        th {
+            padding-top: 12px;
+            padding-bottom: 12px;
+            text-align: center;
+            background-color: #037DF8;
+            color: white;
+        }
+        &#60;/style&#62;
+    &#60;/head&#62;
+    &#60;body&#62;
+    &#39;&#39;&#39;
+
+    html.table{
+        tbody{
+            final_array.each{ row -&#62;
+                tr{
+                    row.each{ item -&#62;
+                        td(item)
+                    }
+                }
+            }
+        }
+    }
+
+    html_footer = &#39;&#39;&#39;&#60;/body&#62;
+    &#60;/html&#62;
+    &#39;&#39;&#39;
+
+    true_html = html_header + writer + html_footer
+    return true_html;
+}
+
+def URLGET(_url) {
+    // Initialize responseDict to be returned
+    responseDict = [:];
+	// HTTP Get
+	CloseableHttpClient httpclient = HttpClients.createDefault();
+	http_request = new HttpGet(_url);
+	response = httpclient.execute(http_request);
+	responseBody = EntityUtils.toString(response.getEntity());
+	code = response.getStatusLine().getStatusCode();
+
+	responseDict[&#39;code&#39;] = code;
+	responseDict[&#39;body&#39;] = responseBody
+	
+	return responseDict;
+}
+
+def LMGET(_accessId, _accessKey, _account, _resourcePath, _queryParameters, _data) {
+	// DATA SHOULD BE EMPTY
+	// Initialize dictionary to hold response code and response body
+	responseDict = [:];
+
+	// Construcst URL to POST to from specified input
+	url = &#39;https://&#39; + _account + &#39;.logicmonitor.com&#39; + &#39;/santaba/rest&#39; + _resourcePath + _queryParameters;
+
+	// Get current time
+	epoch = System.currentTimeMillis();
+
+	// Calculate signature
+	requestVars = &#39;GET&#39; + epoch + _data + _resourcePath;
+
+	hmac = Mac.getInstance(&#39;HmacSHA256&#39;);
+	secret = new SecretKeySpec(_accessKey.getBytes(), &#39;HmacSHA256&#39;);
+	hmac.init(secret);
+	hmac_signed = Hex.encodeHexString(hmac.doFinal(requestVars.getBytes()));
+	signature = hmac_signed.bytes.encodeBase64();
+
+	// HTTP Get
+	CloseableHttpClient httpclient = HttpClients.createDefault();
+	http_request = new HttpGet(url);
+	http_request.addHeader(&#34;Authorization&#34; , &#34;LMv1 &#34; + _accessId + &#34;:&#34; + signature + &#34;:&#34; + epoch);
+	http_request.addHeader(&#34;X-Version&#34; , &#34;2&#34;);
+	response = httpclient.execute(http_request);
+	responseBody = EntityUtils.toString(response.getEntity());
+	code = response.getStatusLine().getStatusCode();
+
+	responseDict[&#39;code&#39;] = code;
+	responseDict[&#39;body&#39;] = responseBody
+	
+	return responseDict;
+}
+
+def LMPOST(_accessId, _accessKey, _account, _resourcePath, _queryParameters, _data) {
+
+	// Initialize dictionary to hold response code and response body
+	responseDict = [:];
+
+	// Construcst URL to POST to from specified input
+	url = &#39;https://&#39; + _account + &#39;.logicmonitor.com&#39; + &#39;/santaba/rest&#39; + _resourcePath + _queryParameters;
+
+	StringEntity params = new StringEntity(_data,ContentType.APPLICATION_JSON);
+
+	// Get current time
+	epoch = System.currentTimeMillis();
+
+	// Calculate signature
+	requestVars = &#39;POST&#39; + epoch + _data + _resourcePath;
+
+	hmac = Mac.getInstance(&#39;HmacSHA256&#39;);
+	secret = new SecretKeySpec(_accessKey.getBytes(), &#39;HmacSHA256&#39;);
+	hmac.init(secret);
+	hmac_signed = Hex.encodeHexString(hmac.doFinal(requestVars.getBytes()));
+	signature = hmac_signed.bytes.encodeBase64();
+
+	// HTTP Get
+	CloseableHttpClient httpclient = HttpClients.createDefault();
+	http_request = new HttpPost(url);
+	http_request.addHeader(&#34;Authorization&#34; , &#34;LMv1 &#34; + _accessId + &#34;:&#34; + signature + &#34;:&#34; + epoch);
+	http_request.setHeader(&#34;Accept&#34;, &#34;application/json&#34;);
+	http_request.setHeader(&#34;Content-type&#34;, &#34;application/json&#34;);
+	http_request.addHeader(&#34;X-Version&#34; , &#34;2&#34;);
+	http_request.setEntity(params);
+	response = httpclient.execute(http_request);
+	responseBody = EntityUtils.toString(response.getEntity());
+	code = response.getStatusLine().getStatusCode();
+
+	responseDict[&#39;code&#39;] = code;
+	responseDict[&#39;body&#39;] = responseBody
+	
+	return responseDict;
+}
+
+def LMPUT(_accessId, _accessKey, _account, _resourcePath, _queryParameters, _data) {
+
+	// Initialize dictionary to hold response code and response body
+	responseDict = [:];
+
+	// Construcst URL to POST to from specified input
+	url = &#39;https://&#39; + _account + &#39;.logicmonitor.com&#39; + &#39;/santaba/rest&#39; + _resourcePath + _queryParameters;
+
+	StringEntity params = new StringEntity(_data,ContentType.APPLICATION_JSON);
+
+	// Get current time
+	epoch = System.currentTimeMillis();
+
+	// Calculate signature
+	requestVars = &#39;PUT&#39; + epoch + _data + _resourcePath;
+
+	hmac = Mac.getInstance(&#39;HmacSHA256&#39;);
+	secret = new SecretKeySpec(_accessKey.getBytes(), &#39;HmacSHA256&#39;);
+	hmac.init(secret);
+	hmac_signed = Hex.encodeHexString(hmac.doFinal(requestVars.getBytes()));
+	signature = hmac_signed.bytes.encodeBase64();
+
+	// HTTP Get
+	CloseableHttpClient httpclient = HttpClients.createDefault();
+	http_request = new HttpPut(url);
+	http_request.addHeader(&#34;Authorization&#34; , &#34;LMv1 &#34; + _accessId + &#34;:&#34; + signature + &#34;:&#34; + epoch);
+	http_request.setHeader(&#34;Accept&#34;, &#34;application/json&#34;);
+	http_request.setHeader(&#34;Content-type&#34;, &#34;application/json&#34;);
+	http_request.addHeader(&#34;X-Version&#34; , &#34;2&#34;);
+	http_request.setEntity(params);
+	response = httpclient.execute(http_request);
+	responseBody = EntityUtils.toString(response.getEntity());
+	code = response.getStatusLine().getStatusCode();
+
+	responseDict[&#39;code&#39;] = code;
+	responseDict[&#39;body&#39;] = responseBody
+	
+	return responseDict;
+}</value>
+            <comment></comment>
+        </attribute>
+        <attribute>
+            <name>windowsscript</name>
+            <value></value>
+            <comment></comment>
+        </attribute>
+        <attribute>
+            <name>linuxscript</name>
+            <value></value>
+            <comment></comment>
+        </attribute>
+        <attribute>
+            <name>windowscmdline</name>
+            <value></value>
+            <comment></comment>
+        </attribute>
+        <attribute>
+            <name>linuxcmdline</name>
+            <value></value>
+            <comment></comment>
+        </attribute>
+        </attributes>
+        <datapoints>
+        <datapoint>
+            <name>exit_code</name>
+            <dataType>4</dataType>
+            <type>2</type>
+            <postprocessormethod>none</postprocessormethod>
+            <postprocessorparam></postprocessorparam>
+            <usevalue>exitCode</usevalue>
+            <alertexpr></alertexpr>
+            <alertmissing>1</alertmissing>
+            <alertsubject></alertsubject>
+            <alertbody></alertbody>
+            <description></description>
+            <maxvalue></maxvalue>
+            <minvalue></minvalue>
+            <userparam1></userparam1>
+            <userparam2></userparam2>
+            <userparam3></userparam3>
+            <iscomposite>false</iscomposite>
+            <rpn></rpn>
+            <alertTransitionIval>0</alertTransitionIval>
+            <alertClearTransitionIval>0</alertClearTransitionIval>
+        </datapoint>
+        </datapoints>
+        <graphs>
+        </graphs>
+        <overviewgraphs>
+        </overviewgraphs>
+        <scripts>
+        </scripts>
+    </entry>
+</feed>
